@@ -1,0 +1,437 @@
+---
+title: "Statistical Learning R Project"
+author: "Carlos Segovia"
+date: "2022-12-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## INTRODUCTION
+This is a stock prediction statistical analysis project. The goal is to predict whether AT&T will be up or down in the market using several predictors.The dataset is from a reliable and from a well cited public source, Kaggle. However, the dataset is not current; but it is comprehensive to begin our analysis with R. 
+
+## PROCESSING
+First, the data set has percentage returns for AT&T (NYSE: T) stock over 1,754 days, from beginning of 2010 until 2016. Using a spreadsheet; for each date, the percentage returns for each of the five previous trading days, Lag1 through Lag5, are calculated. The Volume (number of shares traded on previous day, in 10 millions.) for each of the three previous trading days, Vol1 through Vol3, are calculated. We have Today (percentage return on the date in question) and Direction (whether the stock was Up [1] or Down [0] on the date and our response). Also included are the volumes and percentage returns for competitor Verizon (NYSE: VZ) and big tech company Apple (NYSE: AAPL). Their respective labels in the data set has the company's ticker symbol as suffix.  
+
+### Viewing Data
+Using R, we can view the dimensions of the dataset. In addition, a table can be created using the library knitr and the kable() function. For example, the dataset has the following dimensions, and the first 10 rows and first 10 predictors are shown. 
+```{r dim, echo=FALSE}
+tmobl <- read.csv("C:/MyBackup/RCodes/t_mob_compit.csv",header = TRUE)
+dim(tmobl)
+library(knitr)
+kable(tmobl[1:10,1:10], caption = "A knitr kable")
+```
+
+### Checking for Nulls
+Part of the processing phase for data analysis is data cleaning. One example is checking for nulls, which is missing data. It can be done with the supply() function in R. We can conclude that there are no nulls in the dataset. 
+```{r null, echo=FALSE}
+sapply(tmobl, function(x) sum(is.na(x)))
+```
+
+## ANALYSIS
+The corr() function provides correlation analysis of the observations. It gives numerical values between -1 and 1; where values closer to the endpoints can have a correlation. We will illustrate the results visually using the corrplot() function, it is found in the corrplot library.  
+
+It appears the competitor stock prices have a strong positive correlation to the response variables; which is our stock price or direction. In addition, there is possible correlation to the time-lagging predictors. For the remainder of our analysis, the Today variable will be removed due to our response variable, Direction, being created from it.
+```{r corr, echo=FALSE}
+library(corrplot)
+corrplot(cor(tmobl), method="square")
+
+```
+
+Using scatter plots, we can further investigate our correlations. We can see some linear relationship between the response and predictors.
+
+```{r plots, echo=FALSE}
+par(mfrow=c(2,2))
+plot(tmobl$today,tmobl$today_vz)
+plot(tmobl$today,tmobl$today_aapl)
+plot(tmobl$today,tmobl$lag1)
+plot(tmobl$today,tmobl$vol_lag1)
+```
+
+## MODELING
+
+### Data Partitioning
+We want to test our data with unseen data from the training dataset used to fit our models. Therefore, we partition the data with the training set consisting of observations prior to the year 2015. The testing set will have observations after the year 2015. The dimensions of the training set and testing set are the following, respectively:
+```{r part, echo=FALSE}
+tmobl_n <- within(tmobl, rm(today))
+train <- (tmobl_n$date < 2015)
+tmobl.2015 <- tmobl_n[!train,]
+direction.2015 <- tmobl_n$direction[!train]
+dim(tmobl_n[train,])
+dim(tmobl.2015)
+```
+
+### Best Subset Selection
+The function regsubsets() from the leaps library is used to select the best model that contains given number of predictors. Best is quantified using RSS, residual sum of squares. 
+```{r _sq, echo=FALSE}
+library(leaps)
+regfit.full=regsubsets(tmobl_n$direction~., data=tmobl_n ,nvmax=17, method = "forward")
+reg.summary=summary(regfit.full)
+summary(regfit.full)
+names(reg.summary)
+reg.summary$rsq 
+```
+
+We notice the r squared statistics increases motonically as more variables are used. Also, we see the best model contains 2 variables - which are the competitors stock pricing of Verizon (VZ) and Apple (AAPL).
+
+```{r bicplt, echo=FALSE}
+par(mfrow=c(2,2))
+plot(reg.summary$rss,xlab="Number of Variables",ylab="RSS",type="l")
+plot(reg.summary$adjr2,xlab="Number of Variables",ylab="Adjusted RSq",type="l")
+points(5,reg.summary$adjr2[5], col="red",cex=2,pch=20)
+plot(reg.summary$cp,xlab="Number of Variables",ylab="Cp",type='l')
+points(2,reg.summary$cp[3],col="red",cex=2,pch=20)
+plot(reg.summary$bic,xlab="Number of Variables",ylab="BIC",type='l')
+points(2,reg.summary$bic[3],col="red",cex=2,pch=20)
+```
+
+## Multiple Linear Regression
+We interpret the coefficients  as the average effect on the direction of our stock price of a unit increase on its associated predictor. Holding all other predictors fixed.
+```{r mlr, echo=FALSE}
+mlr.fit <- lm(tmobl_n$direction ~., data = tmobl_n, subset = train)
+summary(mlr.fit)
+```
+
+The lower the p-value, it would mean that our null hypothesis is incorrect. Therefore, there is a strong correlation to our response. We can now validate our model to our test dataset using the 2 strong predictors of stock price from our competitors. To make predictions whether our stock goes up or down in particular day, we create vector of class predictions. Then based on whether predicted probabilities of the stock increase > or < 0.5. 
+
+Finally, computing the Confusion matrix, where the diagonals indicate correct predictions, off-diagonals representing incorrect predictions. Another way to measure accuracy, fraction days which predict was correct.
+
+```{r mlrfin, echo=FALSE}
+mlr.fit2 <- lm(tmobl_n$direction ~ today_vz + today_aapl, data = tmobl_n, subset = train)
+mlr.probs.test <- predict(mlr.fit2, tmobl.2015)
+mlr.pred.test <- rep(0, 504)
+mlr.pred.test[mlr.probs.test > .5] <- 1
+table(mlr.pred.test, direction.2015)
+mean(mlr.pred.test == direction.2015)
+```
+
+## Logistic Regression
+Now we run a logistic regression in R. The argument "family = binomial" must be passed to run logistic regression rather some other type of generalized linear model.
+```{r lgreg, echo=FALSE}
+glm.fits.train <- glm(direction ~., data = tmobl_n, family = binomial, subset = train)
+summary(glm.fits.train)
+```
+
+We can see again that competitor stock price has the strongest correlation, having the lowest p-value. However, the previous volume of our stock shares(vol_lag1) is below the 5% rule of thumb for it to considered as correlating. Next we test our model by making predictions and checking the mean, percentage of time our model is correct. 
+
+```{r lgregfin, echo=FALSE}
+glm.fit.fin <- glm(direction ~ vol_lag1 + today_vz + today_aapl, data = tmobl_n, family = binomial, subset = train)
+summary(glm.fit.fin)
+glm.prob.fin <- predict(glm.fit.fin, tmobl.2015, type="response")
+glm.pred.fin <- rep(0, 504)
+glm.pred.fin[glm.prob.fin > .5] <- 1
+table(glm.pred.fin, direction.2015)
+(196+186)/504  
+mean(glm.pred.fin == direction.2015)
+```
+
+## Other Models
+Other statistical models will be computed to view their accuracy and compare to the previous models. At first, the models will be ran with all predictors and the accuracy will be computed. Then the model with the highest mean value will be optimized.
+
+### LDA
+Linear Discriminant Analysis (LDA) is part of the MASS library. LDA output shows "pi1" 0.50 & "pi2" 0.499; tells us that 50% train observations correlate to days att stock price (today) is down. Also the group means and the coefficients are displayed. 
+
+```{r lda, echo=FALSE}
+library(MASS)
+lda.fit <- lda(direction ~. , data = tmobl_n, subset = train)
+lda.fit
+lda.pred <- predict(lda.fit, tmobl.2015)
+lda.class <- lda.pred$class
+table(lda.class,direction.2015)
+mean(lda.class==direction.2015)
+```
+
+### Best LDA
+
+We include the best 2 variables to the LDA model and determine the accuracy.
+
+```{r lda2, echo=FALSE}
+lda.fit2 <- lda(direction ~  today_vz + today_aapl , data = tmobl_n, subset = train)
+lda.fit2
+lda.pred2 <- predict(lda.fit2, tmobl.2015)
+lda.class2 <- lda.pred2$class
+table(lda.class2,direction.2015)
+mean(lda.class2==direction.2015)
+```
+
+### QDA 
+
+It is also part of the MASS library, output contains group means but doesn't contain coefficients of linear discriminant. This because  QDA classifier involves a quadratic, rather than linear, function of the predictors.
+
+At 65.9% correct prediction rate, it is lower than previous models. One conclusion is that our dataset is not quadratic.
+
+```{r qda, echo=FALSE}
+qda.fit <- qda(direction ~ . , data = tmobl_n , subset = train )
+qda.class <- predict(qda.fit, tmobl.2015)$class
+table(qda.class, direction.2015)
+(236+96)/504
+mean(qda.class == direction.2015)
+```
+
+### Naives Bayes
+The Naives Bayes function is part of the e1071 library. The default settings models quantitative features using a Gaussian, kernel density available. The output contains estimated mean and standard deviation for each variable in each class.
+
+```{r naives, echo=FALSE}
+library(e1071)
+nb.fit <- naiveBayes(direction ~., data = tmobl_n , subset = train)
+nb.class <- predict(nb.fit, tmobl.2015)
+table(nb.class, direction.2015)
+paste("(216+141)/504=",(216+141)/504)
+paste("mean =",mean(nb.class == direction.2015))
+```
+
+### KNN
+K-nearest neighbor function is part of the class library. It forms predictions using a single command and requires 4 inputs. They are: a matrix with predictors for training data; matrix with predictors for test data; vector containing class labels for training and value K number for nearest neighbors. Also, we the cbind() function to bind the competitor stock prices into 2 matrices, one for training and other for testing. Keep in mind to use set.seed(), because if several observations are tied as nearest neighbors, there will need to be a break of the tie. Thus, ensure reproduceability.
+
+```{r knn, echo=FALSE}
+library(class)
+train.X <- cbind(tmobl_n$today_vz, tmobl_n$today_aapl)[train, ]
+test.X <- cbind(tmobl_n$today_vz, tmobl_n$today_aapl)[!train, ]
+train.direction <- tmobl_n$direction[train ]
+set.seed(100)
+knn.pred <- knn(train.X, test.X, train.direction, k=1)
+table(knn.pred, direction.2015)
+(172+158)/504
+mean(knn.pred == direction.2015)
+```
+
+### Best KNN
+A for loop is used to find the best k number, hence the best KNN model will provided.
+
+```{r kloop, echo=FALSE}
+mean.knn.loop = rep(NA, 13)
+for (l in 1:13){
+  set.seed(100)
+  knn.pred.loop <- knn(train.X, test.X, train.direction, k=l)
+  mean.knn.loop[l]=mean(knn.pred.loop == direction.2015)
+}
+mean.knn.loop
+paste("max k=",which.max(mean.knn.loop))
+paste("max k mean=",mean.knn.loop[12])
+```
+
+## Conclusion
+It appears that a 2 variable model is the most ideal; as it provides the better fraction of days we correctly picked the direction of the stock price. In addition, the multiple linear and logistic regression models provided the better results. Thus our final model will have the following coefficients:
+
+```{r concl, echo=FALSE}
+print('Multiple Linear Regression')
+mlr.fit2$coefficients
+print("Logistic Regression")
+lda.fit2$scaling
+```
+
+Negative coefficients could mean if Verizon or Apple are negative today then less likely for AT&T to go up. It makes sense at first thought; however, now we have a statistical model to answer many more questions to to help our stock decisions. 
+
+## R Code
+
+```{rcode, eval=FALSE, echo=TRUE}
+# Clear plots
+if(!is.null(dev.list())) dev.off()
+# Clear console
+cat("\014") 
+# Clean workspace
+rm(list=ls())
+
+##Setting up the working directory
+#setwd("")
+#getwd()
+
+##Reading the Data
+tmobl <- read.csv("C:/.../.csv",header = TRUE)
+attach(tmobl)
+dim(tmobl)
+View(tmobl)
+summary(tmobl)
+cor(tmobl)
+
+## Check for missing data for each column 
+sapply(tmobl, function(x) sum(is.na(x)))
+
+## Corrplot package
+### Visual tool for correlation matrix. 
+library(corrplot)
+corrplot(cor(tmobl), method="square")
+dev.off()
+par(mfrow=c(2,2))
+plot(today, date)
+plot(today, direction)
+plot(today,today_vz)
+plot(today,today_aapl)
+
+#Remove Today from data
+### Due to Direction variable being created from Today variable, it will be removed from further analysis. 
+tmobl_n <- within(tmobl, rm(today))
+tmobl_n[1:4,]
+dim(tmobl_n)
+
+## Partition Data
+train <- (tmobl$date < 2015)
+tmobl.2015 <- tmobl_n[!train,]
+dim(tmobl.2015)
+direction.2015 <- tmobl_n$direction[!train]
+
+## Fit MLR
+mlr.fit <- lm(tmobl_n$direction ~., data = tmobl_n, subset = train)
+summary(mlr.fit) 
+summary(mlr.fit)$r.sq ### gives R^2
+summary(mlr.fit)$sigma  ### gives RSE
+mlr.fit2 <- lm(tmobl_n$direction ~ today_vz + today_aapl, data = tmobl_n, subset = train)
+summary(mlr.fit2)
+anova(mlr.fit,mlr.fit2) ### pg 117
+mlr.probs.test <- predict(mlr.fit2, tmobl.2015)
+mlr.pred.test <- rep(0, 504)
+mlr.pred.test[mlr.probs.test > .5] <- 1
+table(mlr.pred.test, direction.2015)
+(198+185)/504
+mean(mlr.pred.test == direction.2015)
+mean(mlr.pred.test != direction.2015)
+mlr.fit2$coefficients
+
+## Best Subset Selection
+library(leaps)
+regfit.full=regsubsets(tmobl_n$direction~., data=tmobl_n ,nvmax=17, method = "forward")
+reg.summary=summary(regfit.full)
+summary(regfit.full)
+names(reg.summary)
+reg.summary$rsq ## As expected, the R^2 statistic increases monotonically as more variables are included
+
+par(mfrow=c(2,2))
+plot(reg.summary$rss,xlab="Number of Variables",ylab="RSS",type="l")
+plot(reg.summary$adjr2,xlab="Number of Variables",ylab="Adjusted RSq",type="l")
+which.max(reg.summary$adjr2)
+points(5,reg.summary$adjr2[5], col="red",cex=2,pch=20)
+plot(reg.summary$cp,xlab="Number of Variables",ylab="Cp",type='l')
+which.min(reg.summary$cp)
+points(2,reg.summary$cp[2],col="red",cex=2,pch=20)
+which.min(reg.summary$bic)
+plot(reg.summary$bic,xlab="Number of Variables",ylab="BIC",type='l')
+points(2,reg.summary$bic[2],col="red",cex=2,pch=20)
+
+dev.off()
+plot(regfit.full,scale="r2")
+plot(regfit.full,scale="adjr2")
+plot(regfit.full,scale="Cp")
+plot(regfit.full,scale="bic")
+coef(regfit.full,2)
+
+## Choosing Among Models
+regfit.best=regsubsets(tmobl_n[train,]$direction~.,data=tmobl_n[train,],nvmax=17)
+test.mat=model.matrix(tmobl_n[-train,]$direction~.,data=tmobl_n[-train,])
+val.errors=rep(NA,17)
+for(i in 1:17){
+  coefi=coef(regfit.best,id=i)
+  pred=test.mat[,names(coefi)]%*%coefi
+  val.errors[i]=mean((tmobl_n$direction[-train]-pred)^2)
+}
+val.errors
+which.min(val.errors)
+coef(regfit.best,6)
+
+## Fit Logistic Regression
+glm.fits.train <- glm(direction ~., data = tmobl_n, family = binomial, subset = train)
+summary(glm.fits.train)
+glm.probs.test <- predict(glm.fits.train, tmobl.2015, type = "response")
+glm.pred.test <- rep(0, 504)
+glm.pred.test[glm.probs.test > .5] <- 1
+table(glm.pred.test, direction.2015)
+(189+193)/504
+mean(glm.pred.test == direction.2015)
+mean(glm.pred.test != direction.2015) # not equal to, compute test set error, training.
+
+## Remove no relation predictors
+### Thus final model will have vol_lag1 , today_vz, today_aapl. 
+### Price VZ & AAPL coeff. neg. suggests (market) [Price VZ & AAP] had positive return yesterday, then less likely to go up today.
+glm.fit.fin <- glm(direction ~ vol_lag1 + today_vz + today_aapl, data = tmobl_n, family = binomial, subset = train)
+summary(glm.fit.fin)
+glm.prob.fin <- predict(glm.fit.fin, tmobl.2015, type="response")
+glm.pred.fin <- rep(0, 504)
+glm.pred.fin[glm.prob.fin > .5] <- 1
+glm.pred.fin[1:9]
+table(glm.pred.fin, direction.2015)
+(196+186)/504  ###Page 177 con't
+mean(glm.pred.fin == direction.2015)
+
+## LDA
+### Linear Discriminant Analysis
+library(MASS)
+lda.fit <- lda(direction ~. , data = tmobl_n, subset = train)
+lda.fit
+lda.pred <- predict(lda.fit, tmobl.2015)
+lda.class <- lda.pred$class
+table(lda.class,direction.2015)
+mean(lda.class==direction.2015)
+### Applying 50% threshold to posterior probs, recreate predicts in lda.pred$class
+names(lda.pred)
+sum(lda.pred$posterior[ , 1] >= .5)
+sum(lda.pred$posterior[ , 1] < .5)
+### posterior probability output by the model corresponds to prob market will decrease:
+lda.pred$posterior[1:20, 1]
+lda.class[1:20]
+
+##LDA final
+lda.fit2 <- lda(direction ~  today_vz + today_aapl , data = tmobl_n, subset = train)
+lda.fit2
+lda.pred2 <- predict(lda.fit2, tmobl.2015)
+lda.class2 <- lda.pred2$class
+table(lda.class2,direction.2015)
+mean(lda.class2==direction.2015)
+lda.fit2$scaling
+
+## Quadratic Discriminant Analysis QDA 
+qda.fit <- qda(direction ~ . , data = tmobl_n , subset = train )
+qda.fit
+### predict works similar to LDA, here combining two lines of code 
+qda.class <- predict(qda.fit, tmobl.2015)$class
+table(qda.class, direction.2015)
+(236+96)/504
+mean(qda.class == direction.2015)
+
+## Naives Bayes
+library(e1071)
+nb.fit <- naiveBayes(direction ~., data = tmobl_n , subset = train)
+nb.fit
+nb.class <- predict(nb.fit, tmobl.2015)
+table(nb.class, direction.2015)
+(216+141)/504
+mean(nb.class == direction.2015)
+### generate estimates of probability that each observation belongs to a particular class.
+nb.preds <- predict( nb.fit, tmobl.2015, type = "raw")
+nb.preds[1:5, ]
+
+## KNN
+library(class)
+train.X <- cbind(tmobl_n$today_vz, tmobl_n$today_aapl)[train, ]
+test.X <- cbind(tmobl_n$today_vz, tmobl_n$today_aapl)[!train, ]
+train.direction <- tmobl_n$direction[train ]
+set.seed(100)
+knn.pred <- knn(train.X, test.X, train.direction, k=1)
+table(knn.pred, direction.2015)
+(172+158)/504
+mean(knn.pred == direction.2015)
+
+## KNN Best k number
+### for loop for KNN best k.
+mean.knn.loop = rep(NA, 13)
+for (l in 1:13){
+  set.seed(100)
+  knn.pred.loop <- knn(train.X, test.X, train.direction, k=l)
+  mean.knn.loop[l]=mean(knn.pred.loop == direction.2015)
+}
+mean.knn.loop
+which.max(mean.knn.loop)
+
+## Random forest
+library(randomForest)
+set.seed(1)
+bag.tmobl=randomForest(direction~.,data=tmobl_n,subset=train,mtry=13,importance=TRUE)
+bag.tmobl
+yhat.bag = predict(bag.tmobl,newdata=tmobl.2015)
+plot(yhat.bag, direction.2015)
+abline(0,1)
+mean((yhat.bag-direction.2015)^2)
+
+detach(tmobl)
+#save.image("")
+```
+
